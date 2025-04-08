@@ -141,6 +141,7 @@ def train(opt, device):
     # Model
     with torch_distributed_zero_first(LOCAL_RANK), WorkingDirectory(ROOT):
         if Path(opt.model).is_file() or opt.model.endswith(".pt"):
+            print("Loading model.....")
             model = attempt_load(opt.model, device="cpu", fuse=False)
         elif opt.model in torchvision.models.__dict__:  # TorchVision models i.e. resnet50, efficientnet_b0
             model = torchvision.models.__dict__[opt.model](weights="IMAGENET1K_V1" if pretrained else None)

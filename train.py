@@ -7,7 +7,7 @@ Usage - Single-GPU training:
     $ python train.py --data coco128.yaml --weights '' --cfg yolov5s.yaml --img 640  # from scratch
 
 Usage - Multi-GPU DDP training:
-    $ python -m torch.distributed.run --nproc_per_node 4 --master_port 1 train.py --data coco128.yaml --weights yolov5s.pt --img 640 --device 0,1,2,3
+    $ python3 -m torch.distributed.run --nproc_per_node 4 --master_port 1 train.py --data coco128.yaml --weights yolov5s.pt --img 640 --device 0,1,2,3
 
 Models:     https://github.com/ultralytics/yolov5/tree/master/models
 Datasets:   https://github.com/ultralytics/yolov5/tree/master/data
@@ -37,6 +37,9 @@ import torch.nn as nn
 import yaml
 from torch.optim import lr_scheduler
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
+
+torch.autograd.set_detect_anomaly(True)
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
@@ -92,6 +95,32 @@ from utils.torch_utils import (
     smart_optimizer,
     smart_resume,
     torch_distributed_zero_first,
+)
+
+from models.common import (
+    C3,
+    C3SPP,
+    C3TR,
+    SPP,
+    SPPF,
+    Bottleneck,
+    BottleneckCSP,
+    C3Ghost,
+    C3x,
+    Classify,
+    Concat,
+    Contract,
+    Conv,
+    CrossConv,
+    DetectMultiBackend,
+    DWConv,
+    DWConvTranspose2d,
+    Expand,
+    Focus,
+    GhostBottleneck,
+    GhostConv,
+    Proto,
+    VOneBlock,
 )
 
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", -1))  # https://pytorch.org/docs/stable/elastic/run.html
@@ -150,6 +179,8 @@ def train(hyp, opt, device, callbacks):
         opt.freeze,
     )
     callbacks.run("on_pretrain_routine_start")
+    
+    tb_writer = SummaryWriter(log_dir=save_dir / "tensorboard")  # Specify log directory
 
     # Directories
     w = save_dir / "weights"  # weights dir
@@ -212,15 +243,16 @@ def train(hyp, opt, device, callbacks):
     if pretrained:
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
-        ckpt = torch.load(weights, map_location="cpu")  # load checkpoint to CPU to avoid CUDA memory leak
-        model = Model(cfg or ckpt["model"].yaml, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
-        exclude = ["anchor"] if (cfg or hyp.get("anchors")) and not resume else []  # exclude keys
-        csd = ckpt["model"].float().state_dict()  # checkpoint state_dict as FP32
+        ckpt = torch.load(weights, map_location="cpu")  # load checkpoint onto GPU
+        print(f"Device in pretrain check {device}")
+        model = Model(cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create model
+        exclude = ['anchor'] if (cfg or hyp.get('anchors')) and not resume else []  # exclude keys
+        csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
         csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
-        model.load_state_dict(csd, strict=False)  # load
+        model.load_state_dict(csd, strict=False)  # load weights
         LOGGER.info(f"Transferred {len(csd)}/{len(model.state_dict())} items from {weights}")  # report
     else:
-        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
+        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create model
     amp = check_amp(model)  # check AMP
 
     # Freeze
@@ -343,6 +375,7 @@ def train(hyp, opt, device, callbacks):
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
     model.names = names
 
+
     # Start training
     t0 = time.time()
     nb = len(train_loader)  # number of batches
@@ -388,6 +421,8 @@ def train(hyp, opt, device, callbacks):
             callbacks.run("on_train_batch_start")
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
+            print(f"Device in train {device}")
+
 
             # Warmup
             if ni <= nw:
@@ -402,6 +437,7 @@ def train(hyp, opt, device, callbacks):
 
             # Multi-scale
             if opt.multi_scale:
+                print("Multiscale")
                 sz = random.randrange(int(imgsz * 0.5), int(imgsz * 1.5) + gs) // gs * gs  # size
                 sf = sz / max(imgs.shape[2:])  # scale factor
                 if sf != 1:
@@ -410,6 +446,7 @@ def train(hyp, opt, device, callbacks):
 
             # Forward
             with torch.cuda.amp.autocast(amp):
+                model.to(device)
                 pred = model(imgs)  # forward
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if RANK != -1:
@@ -537,6 +574,7 @@ def train(hyp, opt, device, callbacks):
 
         callbacks.run("on_train_end", last, best, epoch, results)
 
+    tb_writer.close()
     torch.cuda.empty_cache()
     return results
 
@@ -671,6 +709,7 @@ def main(opt, callbacks=Callbacks()):
     # DDP mode
     device = select_device(opt.device, batch_size=opt.batch_size)
     if LOCAL_RANK != -1:
+        print(f"In local Rank check in Train.py________")
         msg = "is not compatible with YOLOv5 Multi-GPU DDP training"
         assert not opt.image_weights, f"--image-weights {msg}"
         assert not opt.evolve, f"--evolve {msg}"
@@ -679,6 +718,7 @@ def main(opt, callbacks=Callbacks()):
         assert torch.cuda.device_count() > LOCAL_RANK, "insufficient CUDA devices for DDP command"
         torch.cuda.set_device(LOCAL_RANK)
         device = torch.device("cuda", LOCAL_RANK)
+        print(f"Device in LOCAL RANK {device}")
         dist.init_process_group(
             backend="nccl" if dist.is_nccl_available() else "gloo", timeout=timedelta(seconds=10800)
         )

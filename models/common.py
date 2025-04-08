@@ -22,6 +22,8 @@ import torch.nn as nn
 from PIL import Image
 from torch.cuda import amp
 
+
+
 # Import 'ultralytics' package or install if missing
 try:
     import ultralytics
@@ -55,6 +57,12 @@ from utils.general import (
     yaml_load,
 )
 from utils.torch_utils import copy_attr, smart_inference_mode
+
+
+from .vone import (
+    modules,
+    params,
+)
 
 
 def autopad(k, p=None, d=1):
@@ -1107,3 +1115,126 @@ class Classify(nn.Module):
         if isinstance(x, list):
             x = torch.cat(x, 1)
         return self.linear(self.drop(self.pool(self.conv(x)).flatten(1)))
+    
+
+
+class VOneBlockDN(nn.Module):
+    def __init__(self):
+        super(VOneBlockDN, self).__init__()
+        self.simple_channels = 64
+        self.complex_channels = 64
+        #changing to anything but a stride of 4 will cause a p6 error to be thrown if VOne is at the forefront of the block
+        self.stride = 3
+        self.ksize = 27
+        self.noise_mode = None
+        self.noise_scale = 0.286
+        self.noise_level = 0.071
+        self.k_exc = 23.5
+        self.col = 3
+        self.out_channels = 64
+
+        # Initializing the blocks to None, they will be created dynamically in the forward pass
+        self.vone_blocks = {}
+        self.vone_block = None
+        self.dn_blocks = {}
+        self.dn_block = None
+        self.prev_image_size = None
+
+
+    def forward(self, x):
+        image_size = x.shape[-1]
+        if self.prev_image_size != image_size:
+            if image_size not in self.vone_blocks:
+                visual_degrees = 2
+                ppd = image_size / visual_degrees
+
+                sf, theta, phase, nx, ny = params.generate_gabor_param(
+                    self.simple_channels + self.complex_channels, 0, False, 0.75, 11.3, 0
+                )
+
+                sf /= ppd
+                sigx = nx / sf
+                sigy = ny / sf
+                theta = theta / 180 * np.pi
+                phase = phase / 180 * np.pi
+
+                vone_block = modules.VOneBlock(
+                    sf=sf, theta=theta, sigx=sigx, sigy=sigy, phase=phase,
+                    k_exc=self.k_exc, noise_mode=self.noise_mode, 
+                    noise_scale=self.noise_scale, noise_level=self.noise_level,
+                    simple_channels=self.simple_channels, complex_channels=self.complex_channels,
+                    ksize=self.ksize, stride=self.stride, input_size=image_size, color_channels=self.col
+                )
+
+                size = int(image_size / self.stride)
+                dn_block = modules.DivisiveNormBlock(channel_num=self.simple_channels + self.complex_channels, size=size)
+
+                self.vone_blocks[image_size] = vone_block
+                self.dn_blocks[image_size] = dn_block
+            
+            self.vone_block = self.vone_blocks[image_size]
+            self.dn_block = self.dn_blocks[image_size]
+            self.prev_image_size = image_size
+
+
+        
+        return 
+
+class VOneBlock(nn.Module):
+    out_channels = 64
+    def __init__(self):
+        super(VOneBlock, self).__init__()
+        self.simple_channels = 64
+        self.complex_channels = 64
+        self.stride = 2
+        self.ksize = 31
+        self.noise_mode = 'neuronal'
+        self.noise_scale = 0.35
+        self.noise_level = 0.07
+        self.k_exc = 25
+        self.color_channels = 3
+        self.out_channels = self.simple_channels + self.complex_channels
+
+        # Instantiate VOneBlock
+        self.vone_block = modules.VOneBlock(
+            simple_channels=self.simple_channels,
+            complex_channels=self.complex_channels,
+            stride=self.stride,
+            ksize=self.ksize,
+            noise_mode=self.noise_mode,
+            noise_scale=self.noise_scale,
+            noise_level=self.noise_level,
+            k_exc=self.k_exc,
+            color_channels=self.color_channels
+        )
+        self.dn_block = modules.DivisiveNormBlock(channel_num=self.out_channels)
+
+
+        # Variable to track input size
+        self.prev_image_size = None
+
+        self.SiLu = nn.SiLU()
+        self.channelReducer = nn.Conv2d(128, 64, kernel_size=3, padding=1)
+
+    def forward(self, x):
+        image_size = x.shape[-1]
+        if self.prev_image_size != image_size:
+            # Re-initialize VOneBlock if input size changes
+            self.vone_block.initialize(x)
+            self.prev_image_size = image_size
+
+        x = self.vone_block(x)
+        #x = self.dn_block(x)
+        x = self.SiLu(x)
+
+        x = self.channelReducer(x)
+
+        x = self.SiLu(x)
+
+        # Apply gradient clipping
+        if hasattr(self, 'clip_value'):
+            for param in self.parameters():
+                if param.grad is not None:
+                    param.grad.data.clamp_(-self.clip_value, self.clip_value)
+        
+        return x
