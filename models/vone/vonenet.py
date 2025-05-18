@@ -11,7 +11,7 @@ import numpy as np
 def VOneNet(sf_corr=0.75, sf_max=11.3, sf_min=0, rand_param=False, gabor_seed=0,
             simple_channels=256, complex_channels=256,
             noise_mode=None, noise_scale=0.286, noise_level=0.071, k_exc=23.5,
-            model_arch='resnet50', image_size=64, visual_degrees=2, ksize=31, stride=2, num_classes=200,
+            model_arch='resnet50', image_size=64, visual_degrees=2, ksize=25, stride=4, num_classes=200,
             div_norm=True, vonenet_on=True, color_channels = 1, use_full_image_net=0, restore_path=None, map_location=None):
 
     #Troubleshooting passing arguments, not relevant.

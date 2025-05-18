@@ -169,8 +169,13 @@ class BaseModel(nn.Module):
                 self._profile_one_layer(m, x, dt)
             x = m(x)  # run
             y.append(x if m.i in self.save else None)  # save output
-            if visualize:
+
+            if visualize and m.type == 'models.common.VOneBlock':
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
+            if visualize and m.i == 0:  # only visualize first Conv layer
+                print(f"Layer {m.i}: {m.__class__.__name__}, from: {m.f}")
+                feature_visualization(x, m.type, m.i, save_dir=visualize)
+
         return x
 
     def _profile_one_layer(self, m, x, dt):

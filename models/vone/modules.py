@@ -73,7 +73,7 @@ class GFB(nn.Module):
 
 
 class VOneBlock(nn.Module):
-    def __init__(self, simple_channels=32, complex_channels=32, stride=2, ksize=31, noise_mode='neuronal',
+    def __init__(self, simple_channels=32, complex_channels=32, stride=4, ksize=25, noise_mode='neuronal',
                  noise_scale=0.35, noise_level=0.07, k_exc=25, color_channels=3):
         super(VOneBlock, self).__init__()
         self.simple_channels = simple_channels

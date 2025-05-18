@@ -1186,6 +1186,7 @@ class VOneBlock(nn.Module):
         super(VOneBlock, self).__init__()
         self.simple_channels = 64
         self.complex_channels = 64
+        #self.stride = 2, #self.ksize = 31 for non OG model for OG: stride = 4, ksize = 25
         self.stride = 2
         self.ksize = 31
         self.noise_mode = 'neuronal'
@@ -1219,10 +1220,11 @@ class VOneBlock(nn.Module):
     def forward(self, x):
         image_size = x.shape[-1]
         if self.prev_image_size != image_size:
-            # Re-initialize VOneBlock if input size changes
+            #Re-initialize VOneBlock if input size changes
             self.vone_block.initialize(x)
             self.prev_image_size = image_size
 
+        #Bare VOne is just Vone + SiLu
         x = self.vone_block(x)
         #x = self.dn_block(x)
         x = self.SiLu(x)
@@ -1231,7 +1233,8 @@ class VOneBlock(nn.Module):
 
         x = self.SiLu(x)
 
-        # Apply gradient clipping
+        #Apply gradient clipping
+        
         if hasattr(self, 'clip_value'):
             for param in self.parameters():
                 if param.grad is not None:
